@@ -1,0 +1,405 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xmlns:file="http://www.mulesoft.org/schema/mule/file"
+      xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+      xmlns:google-sheets="http://www.mulesoft.org/schema/mule/google-sheets"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd 
+http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+http://www.mulesoft.org/schema/mule/google-sheets http://www.mulesoft.org/schema/mule/google-sheets/current/mule-google-sheets.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd">
+
+
+
+    <!-- Health Check Flow -->
+    <flow name="healthCheckFlow">
+        <try>
+            <google-sheets:get-spreadsheets-by-spreadsheet-id doc:name="Get Spreadsheet Properties" doc:id="df62496c-13c0-429e-8808-2466dfb570f3" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.sheet.id')]"/>
+			<set-variable variableName="googleSheetsStatus" value="UP"/>
+            <logger level="DEBUG" message="Google Sheets connection successful" category="com.company.api.health"/>
+            <error-handler>
+                <on-error-continue>
+                    <set-variable variableName="googleSheetsStatus" value="DOWN"/>
+                    <logger level="WARN" message="Google Sheets connection failed: #[error.description]" category="com.company.api.health"/>
+                </on-error-continue>
+            </error-handler>
+        </try>
+        
+        <ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "status": if (vars.googleSheetsStatus == "UP") "UP" else "DOWN",
+  "components": {
+    "googleSheets": vars.googleSheetsStatus,
+    "api": "UP"
+  },
+  "timestamp": now()
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+        
+        <set-variable variableName="httpStatus" value="200"/>
+        <logger level="INFO" message="Health check completed with status: #[payload.status]" category="com.company.api.health"/>
+    </flow>
+    
+    <!-- Get Orders Flow -->
+    <flow name="getOrdersFlow">
+        <logger level="INFO" message="Retrieving orders from Google Sheets" category="com.company.api.orders"/>
+        
+        <!-- Get all orders from Google Sheets -->
+        
+        <!-- Transform Google Sheets data to API response format -->
+        <google-sheets:get-spreadsheets-values-by-spreadsheet-id-range doc:name="Get Spreadsheets Values" doc:id="6c8bc393-9cef-4aba-a76a-a9d10ac0b2fa" config-ref="Google_Sheets_Config" range="#[p('googlesheet.report-sheet')]" spreadsheetId="#[p('googlesheet.report-get-sheet')]"/>
+		<ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var headers = payload.values[0]
+var rows = payload.values[1 to -1]
+fun rowToObject(row) = 
+  headers zip row reduce ((item, accumulator) -> 
+    accumulator ++ {(item[0]): item[1]}
+  )
+fun parseLineItems(lineItemsJson) =
+  if (lineItemsJson != null and lineItemsJson != "")
+    read(lineItemsJson, "application/json")
+  else
+    []
+---
+rows map (row) -> {
+  orderId: rowToObject(row).orderId,
+  opportunityId: rowToObject(row).opportunityId,
+  customerName: rowToObject(row).customerName,
+  orderDate: rowToObject(row).orderDate as DateTime,
+  amount: rowToObject(row).amount as Number,
+  status: rowToObject(row).status,
+  lineItems: parseLineItems(rowToObject(row).lineItems),
+  notes: rowToObject(row).notes default ""
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+        
+        <!-- Apply filters if provided in query parameters -->
+        <ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var opportunityIdFilter = attributes.queryParams.opportunityId
+var statusFilter = attributes.queryParams.status
+var fromDateFilter = attributes.queryParams.fromDate as DateTime default null
+var toDateFilter = attributes.queryParams.toDate as DateTime default null
+
+fun applyFilters(order) =
+    (opportunityIdFilter == null or order.opportunityId == opportunityIdFilter) and
+    (statusFilter == null or order.status == statusFilter) and
+    (fromDateFilter == null or order.orderDate >= fromDateFilter) and
+    (toDateFilter == null or order.orderDate <= toDateFilter)
+---
+payload filter (order) -> applyFilters(order)]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+        
+        <set-variable variableName="httpStatus" value="200"/>
+        <logger level="INFO" message="Retrieved #[sizeOf(payload)] orders" category="com.company.api.orders"/>
+    </flow>
+    
+    <!-- Create Order Flow -->
+    <flow name="createOrderFlow">
+        <!-- Validate input -->
+		<validation:is-not-null value="#[payload.OrderNumber]" message="OrderNumber is required"/>
+        <validation:is-not-null value="#[payload.customerName]" message="Customer name is required"/>
+        <validation:is-not-null value="#[payload.totalAmount]" message="Amount is required"/>
+        
+        <!-- Generate order ID if not provided -->
+        
+        <!-- Prepare data for Google Sheets -->
+        
+        <!-- Get existing headers from Google Sheets -->
+        <ee:transform doc:name="Transform Message" doc:id="5d21dd6c-e47f-4148-be1c-464a61af7231" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="sfdata" ><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<google-sheets:get-spreadsheets-values-by-spreadsheet-id-range doc:name="Get Spreadsheets Values" doc:id="ecef2285-c374-4d78-8fe7-d0ff37c2a4b8" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet')]"/>
+		<set-variable value="#[(((payload.values [1 to -1] )  map ((item, index) -&gt; item ++ [index +2] )) filter ((item, index) -&gt; item[0] ~= vars.sfdata.productCode))]" doc:name="Set Variable" doc:id="b696f1d9-9c58-4ace-9150-c4595395ebf4" variableName="sheetrow"/>
+		<set-payload value='#[%dw 2.0&#10;output application/json &#10;---&#10;vars.sfdata pluck ((value, key, index) -&gt; value default " ")]' doc:name="Set Payload" doc:id="07766da5-b716-46ab-ac80-31521d7c02f4" />
+		<choice doc:name="Choice" doc:id="0c85c027-0ccc-47d6-8797-65c6a2479a2d" >
+			<when expression="#[!isEmpty(vars.sheetrow)]">
+				<logger level="INFO" doc:name="Logger" doc:id="4b75bdd1-075c-45ee-84d3-8f90e0093847" message="update order in sheet :::: #[vars.sfdata.productCode]"/>
+				<google-sheets:update-spreadsheets-values-by-spreadsheet-id-range doc:name="Update Spreadsheets Values" doc:id="28e355ce-d21e-4c37-8a19-27697e3e431a" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet') ++ &quot;!A&quot; ++ vars.sheetrow[0][-1]]">
+					<google-sheets:spreadsheets-values-rangeappend-content ><![CDATA[#[output json
+---
+{
+	values: [payload]
+}]]]></google-sheets:spreadsheets-values-rangeappend-content>
+				</google-sheets:update-spreadsheets-values-by-spreadsheet-id-range>
+				<ee:transform doc:name="Transform Message" doc:id="251fa9b2-1e44-4bb7-9b09-924910cb76fe" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+    orderId: vars.sfdata.productCode,
+    status: "SUCCESS",
+    message: "Order Updated successfully",
+    timestamp: now()
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<set-variable value="201" doc:name="Set Variable" doc:id="8f03ac58-8045-44ad-8a66-1f50026e3081" variableName="httpStatus" />
+				<logger level="INFO" doc:name="Logger1" doc:id="ba3517cc-28f4-4d53-b914-2de66ffaabe3" message="Updated order with ID: #[vars.sfdata.productCode]" category="com.company.api.orders" />
+			</when>
+			<otherwise >
+				<logger level="INFO" doc:name="Logger" doc:id="60839a34-fc4a-41d3-acaf-5efdf1ee6760" message="create order in sheet :::: #[vars.sfdata.productCode]"/>
+				<google-sheets:create-spreadsheets-values-rangeappend-by-spreadsheet-id doc:name="Append Spreadsheets Values" doc:id="444b0082-0ef4-46d9-b27b-ce535e4c3cb5" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet')]">
+			<google-sheets:spreadsheets-values-rangeappend-content><![CDATA[#[output json
+---
+{
+	values: [payload]
+}]]]></google-sheets:spreadsheets-values-rangeappend-content>
+		</google-sheets:create-spreadsheets-values-rangeappend-by-spreadsheet-id>
+				<ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    orderId: vars.sfdata.productCode,
+    status: "SUCCESS",
+    message: "Order created successfully",
+    timestamp: now()
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+				<set-variable variableName="httpStatus" value="201" />
+				<logger level="INFO" message="Created new order with ID: #[vars.sfdata.productCode]" category="com.company.api.orders" />
+			</otherwise>
+		</choice>
+        
+        <!-- Create success response -->
+    </flow>
+    
+    <!-- Get Order By ID Flow -->
+    <flow name="getOrderByIdFlow">
+        <set-variable variableName="orderId" value="#[attributes.uriParams.orderId]"/>
+        <logger level="INFO" message="Retrieving order with ID: #[vars.orderId]" category="com.company.api.orders"/>
+        
+        <!-- Get all orders from Google Sheets -->
+        
+        <!-- Transform Google Sheets data and find the requested order -->
+        <google-sheets:get-spreadsheets-values-by-spreadsheet-id-range doc:name="Get Spreadsheets Values" doc:id="a319f95f-bf73-489e-a354-68c0767e2c01" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet')]"/>
+		<ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var headers = payload.values[0]
+var rows = payload.values[1 to -1]
+fun rowToObject(row) = 
+  headers zip row reduce ((item, accumulator) -> 
+    accumulator ++ {(item[0]): item[1]}
+  )
+fun parseLineItems(lineItemsJson) =
+  if (lineItemsJson != null and lineItemsJson != "")
+    read(lineItemsJson, "application/json")
+  else
+    []
+var orders = rows map (row) -> {
+  orderId: rowToObject(row).orderId,
+  opportunityId: rowToObject(row).opportunityId,
+  customerName: rowToObject(row).customerName,
+  orderDate: rowToObject(row).orderDate as DateTime,
+  amount: rowToObject(row).amount as Number,
+  status: rowToObject(row).status,
+  lineItems: parseLineItems(rowToObject(row).lineItems),
+  notes: rowToObject(row).notes default ""
+}
+var targetOrder = orders filter ($.orderId == vars.orderId)
+---
+targetOrder[0]]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+        
+        <!-- Check if order was found -->
+        <choice>
+            <when expression="#[payload == null]">
+                <logger level="WARN" message="Order not found with ID: #[vars.orderId]" category="com.company.api.orders"/>
+                <set-variable variableName="httpStatus" value="404"/>
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    code: "NOT_FOUND",
+    message: "Order not found with ID: " ++ vars.orderId,
+    timestamp: now()
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </when>
+            <otherwise>
+                <set-variable variableName="httpStatus" value="200"/>
+                <logger level="INFO" message="Retrieved order with ID: #[vars.orderId]" category="com.company.api.orders"/>
+            </otherwise>
+        </choice>
+    </flow>
+    
+    <!-- Update Order Flow -->
+    <flow name="updateOrderFlow">
+        <set-variable variableName="orderId" value="#[attributes.uriParams.orderId]"/>
+        <logger level="INFO" message="Updating order with ID: #[vars.orderId]" category="com.company.api.orders"/>
+        
+        <!-- Validate input -->
+        <validation:is-not-null value="#[payload]" message="Request body cannot be empty"/>
+        
+        <!-- Get all orders from Google Sheets to find the one to update -->
+        
+        <!-- Find the order and its row index -->
+        <google-sheets:get-spreadsheets-values-by-spreadsheet-id-range doc:name="Get Spreadsheets Values" doc:id="071e15f8-5f88-4b63-9007-5bdcef411aa4" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet')]"/>
+		<ee:transform>
+            <ee:variables>
+                <ee:set-variable variableName="orderData"><![CDATA[%dw 2.0
+output application/json
+var headers = payload.values[0]
+var rows = payload.values[1 to -1]
+var targetRowIndex = rows findIndex ((row) -> row[0] == vars.orderId)
+---
+{
+    headers: headers,
+    targetRowIndex: targetRowIndex,
+    found: targetRowIndex >= 0
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        
+        <choice>
+            <when expression="#[vars.orderData.found == false]">
+                <logger level="WARN" message="Order not found for update: #[vars.orderId]" category="com.company.api.orders"/>
+                <set-variable variableName="httpStatus" value="404"/>
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    code: "NOT_FOUND",
+    message: "Order not found with ID: " ++ vars.orderId,
+    timestamp: now()
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </when>
+            <otherwise>
+                <!-- Prepare updated data for Google Sheets -->
+                <ee:transform>
+                    <ee:variables>
+                        <ee:set-variable variableName="updatedRow"><![CDATA[%dw 2.0
+output application/json
+---
+[
+    vars.orderId,
+    payload.opportunityId,
+    payload.customerName,
+    payload.orderDate as String {format: "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"},
+    payload.amount as String,
+    payload.status,
+    write(payload.lineItems, "application/json"),
+    payload.notes default ""
+]]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+                
+                <!-- Update the order in Google Sheets -->
+                <!-- <google-sheets:update-values config-ref="Google_Sheets_Config" 
+                                           spreadsheetId="${google.sheets.spreadsheet.id}" 
+                                           range="${google.sheets.orders.sheet.name}!A${vars.orderData.targetRowIndex + 2}:H${vars.orderData.targetRowIndex + 2}" 
+                                           valueInputOption="RAW">
+                    <google-sheets:values><![CDATA[#[[vars.updatedRow]]]]></google-sheets:values>
+                </google-sheets:update-values>
+                 -->
+                <!-- Create success response -->
+				<ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    orderId: vars.orderId,
+    status: "SUCCESS",
+    message: "Order updated successfully",
+    timestamp: now()
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+                
+                <set-variable variableName="httpStatus" value="200"/>
+                <logger level="INFO" message="Updated order with ID: #[vars.orderId]" category="com.company.api.orders"/>
+            </otherwise>
+        </choice>
+    </flow>
+    
+    <!-- Delete Order Flow -->
+    <flow name="deleteOrderFlow">
+        <set-variable variableName="orderId" value="#[attributes.uriParams.orderId]"/>
+        <logger level="INFO" message="Deleting order with ID: #[vars.orderId]" category="com.company.api.orders"/>
+        
+        <!-- Get all orders from Google Sheets to find the one to delete -->
+        
+        <!-- Find the order and its row index -->
+        <google-sheets:get-spreadsheets-values-by-spreadsheet-id-range doc:name="Get Spreadsheets Values" doc:id="18eb6fcc-a221-4cb6-9e71-7efe87cacac8" config-ref="Google_Sheets_Config" spreadsheetId="#[p('googlesheet.report-get-sheet')]" range="#[p('googlesheet.report-sheet')]"/>
+		<ee:transform>
+            <ee:variables>
+                <ee:set-variable variableName="orderData"><![CDATA[%dw 2.0
+output application/json
+var headers = payload.values[0]
+var rows = payload.values[1 to -1]
+var targetRowIndex = rows findIndex ((row) -> row[0] == vars.orderId)
+---
+{
+    headers: headers,
+    targetRowIndex: targetRowIndex,
+    found: targetRowIndex >= 0
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        
+        <choice>
+            <when expression="#[vars.orderData.found == false]">
+                <logger level="WARN" message="Order not found for deletion: #[vars.orderId]" category="com.company.api.orders"/>
+                <set-variable variableName="httpStatus" value="404"/>
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    code: "NOT_FOUND",
+    message: "Order not found with ID: " ++ vars.orderId,
+    timestamp: now()
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+            </when>
+			<otherwise>
+                <!-- Instead of deleting, update status to CANCELLED -->
+				<logger level="INFO" doc:name="Logger" doc:id="68f1ada3-e00b-457e-adcb-7e4e1a9f22c5" />
+			</otherwise>
+        </choice>
+    </flow>
+</mule>

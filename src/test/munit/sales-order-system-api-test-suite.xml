@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+      http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+      http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="sales-order-system-api-test-suite.xml"/>
+    
+    <!-- Test Health Check -->
+    <!-- [STUDIO:"healthCheckFlowTest"]<munit:test name="healthCheckFlowTest" description="Test health check functionality">
+        <munit:behavior>
+            <munit-tools:mock-when processor="google-sheets:get-spreadsheet">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="config-ref" whereValue="Google_Sheets_Config"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{
+                        'spreadsheetId': '1234567890',
+                        'properties': {
+                            'title': 'Test Spreadsheet'
+                        }
+                    }&#93;"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="healthCheckFlow"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status&#93;" is="#[MunitTools::equalTo('UP')&#93;"/>
+            <munit-tools:assert-that expression="#[payload.components.googleSheets&#93;" is="#[MunitTools::equalTo('UP')&#93;"/>
+            <munit-tools:assert-that expression="#[payload.components.api&#93;" is="#[MunitTools::equalTo('UP')&#93;"/>
+        </munit:validation>
+    </munit:test> [STUDIO] -->
+    
+    <!-- Test Get Orders -->
+    <!-- [STUDIO:"getOrdersFlowTest"]<munit:test name="getOrdersFlowTest" description="Test retrieving orders">
+        <munit:behavior>
+            <munit-tools:mock-when processor="google-sheets:get-values">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="config-ref" whereValue="Google_Sheets_Config"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{
+                        'values': [
+                            ['orderId', 'opportunityId', 'customerName', 'orderDate', 'amount', 'status', 'lineItems', 'notes'&#93;,
+                            ['order-123', 'opp-456', 'ACME Inc', '2023-10-15T10:30:00.000Z', '1000.50', 'APPROVED', '[{\"productId\":\"prod-1\",\"productName\":\"Widget\",\"quantity\":5,\"unitPrice\":200.10}&#93;', 'Test order'&#93;
+                        &#93;
+                    }&#93;"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="getOrdersFlow"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[sizeOf(payload)&#93;" is="#[MunitTools::equalTo(1)&#93;"/>
+            <munit-tools:assert-that expression="#[payload[0&#93;.orderId&#93;" is="#[MunitTools::equalTo('order-123')&#93;"/>
+            <munit-tools:assert-that expression="#[payload[0&#93;.opportunityId&#93;" is="#[MunitTools::equalTo('opp-456')&#93;"/>
+            <munit-tools:assert-that expression="#[payload[0&#93;.amount&#93;" is="#[MunitTools::equalTo(1000.50)&#93;"/>
+        </munit:validation>
+    </munit:test> [STUDIO] -->
+    
+    <!-- Test Create Order -->
+    <munit:test name="createOrderFlowTest" description="Test creating a new order">
+        <munit:behavior>
+            <munit-tools:mock-when processor="google-sheets:get-values">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="config-ref" whereValue="Google_Sheets_Config"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{
+                        'values': [
+                            ['orderId', 'opportunityId', 'customerName', 'orderDate', 'amount', 'status', 'lineItems', 'notes']
+                        ]
+                    }]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+            <munit-tools:mock-when processor="google-sheets:append-values">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="config-ref" whereValue="Google_Sheets_Config"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload value="#[{
+                        'spreadsheetId': '1234567890',
+                        'updates': {
+                            'updatedRows': 1
+                        }
+                    }]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload value="#[{
+                    'opportunityId': 'opp-789',
+                    'customerName': 'Test Customer',
+                    'amount': 2500.75,
+                    'status': 'DRAFT',
+                    'lineItems': [
+                        {
+                            'productId': 'prod-2',
+                            'productName': 'Gadget',
+                            'quantity': 10,
+                            'unitPrice': 250.075
+                        }
+                    ]
+                }]"/>
+            </munit:set-event>
+            <flow-ref name="createOrderFlow"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.status]" is="#[MunitTools::equalTo('SUCCESS')]"/>
+            <munit-tools:assert-that expression="#[payload.message]" is="#[MunitTools::equalTo('Order created successfully')]"/>
+            <munit-tools:assert-that expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(201)]"/>
+        </munit:validation>
+    </munit:test>
+</mule>

@@ -1,0 +1,330 @@
+#%RAML 1.0
+title: sales-order-system-api
+version: v1
+baseUri: https://api.company.com/system/v1
+mediaType: application/json
+protocols: [HTTPS]
+
+description: |
+  # Sales Order System API
+  
+  This System API connects to Google Sheets to create and manage sales orders. It encapsulates 
+  the connection to Google Sheets and handles the creation of orders with proper authentication.
+  
+  ## Purpose
+  The API serves as the system layer in the MuleSoft API-led connectivity approach, providing 
+  standardized access to the Google Sheets backend where sales orders are stored and managed.
+  
+  ## Usage
+  This API is primarily consumed by the opportunity-event-processor-api, which processes 
+  Salesforce Opportunity events and creates sales orders through this API.
+  
+  ## Rate Limits
+  - 100 requests per minute
+  - 1000 requests per hour
+  
+  ## Support
+  For support inquiries, contact: api-support@company.com
+
+securitySchemes:
+  oauth_2_0:
+    type: OAuth 2.0
+    description: |
+      OAuth 2.0 authentication for the Sales Order System API.
+      Client credentials flow is supported for system-to-system integration.
+    settings:
+      accessTokenUri: auth.company.com/oauth2/token
+      authorizationGrants: [ client_credentials ]
+      scopes:
+        - system:read
+        - system:write
+        - system:admin
+  
+  api_key:
+    type: Pass Through
+    description: |
+      API Key authentication for system-level access.
+      The API key must be included in all requests via the X-API-Key header.
+    describedBy:
+      headers:
+        X-API-Key:
+          description: System API key for authentication
+          type: string
+          required: true
+
+traits:
+  rateLimited:
+    headers:
+      X-Rate-Limit:
+        description: The number of allowed requests in the current period
+        type: integer
+        required: false
+      X-Rate-Limit-Remaining:
+        description: The number of remaining requests in the current period
+        type: integer
+        required: false
+
+types:
+  SalesOrder:
+    type: object
+    properties:
+      orderId:
+        type: string
+        description: Unique identifier for the sales order
+        required: false
+      opportunityId:
+        type: string
+        description: Related Salesforce Opportunity ID
+        required: false
+      customerName:
+        type: string
+        description: Name of the customer
+        required: false
+      orderDate:
+        type: string
+        description: Date when the order was created
+        required: false
+      amount:
+        type: number
+        format: double
+        description: Total order amount
+        required: false
+      status:
+        type: string
+        enum: [DRAFT, SUBMITTED, APPROVED, FULFILLED, CANCELLED]
+        description: Current status of the order
+        required: false
+      lineItems:
+        type: array
+        required: false
+        description: List of products in the order
+        items:
+          type: object
+          properties:
+            productId:
+              type: string
+              required: false
+            productName:
+              type: string
+              required: false
+            quantity:
+              type: integer
+              minimum: 1
+              required: false
+            unitPrice:
+              type: number
+              format: double
+              required: false
+      notes:
+        type: string
+        description: Additional notes about the order
+        required: false
+
+  OrderResponse:
+    type: object
+    properties:
+      orderId:
+        type: string
+        description: ID of the created or updated order
+      status:
+        type: string
+        description: Status of the operation
+      message:
+        type: string
+        description: Additional information about the operation
+      timestamp:
+        type: string
+        description: When the operation was completed
+
+  ErrorResponse:
+    type: object
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+      timestamp:
+        type: string
+      details:
+        type: string
+
+/orders:
+  description: Endpoint for managing sales orders in Google Sheets
+  
+  get:
+    description: Retrieve all sales orders or filter by criteria
+    is: [rateLimited]
+    queryParameters:
+      opportunityId:
+        type: string
+        required: false
+        description: Filter orders by Salesforce Opportunity ID
+      status:
+        type: string
+        required: false
+        description: Filter orders by status
+      fromDate:
+        type: string
+        required: false
+        description: Filter orders created on or after this date
+      toDate:
+        type: string
+        required: false
+        description: Filter orders created on or before this date
+    responses:
+      200:
+        body:
+          application/json:
+            type: array
+            items:
+              type: SalesOrder
+      400:
+        body:
+          application/json:
+            type: ErrorResponse
+      401:
+        body:
+          application/json:
+            type: ErrorResponse
+      403:
+        body:
+          application/json:
+            type: ErrorResponse
+      500:
+        body:
+          application/json:
+            type: ErrorResponse
+  
+  post:
+    description: Create a new sales order in Google Sheets
+    is: [rateLimited]
+    body:
+      application/json:
+        type: SalesOrder
+    responses:
+      201:
+        body:
+          application/json:
+            type: OrderResponse
+      400:
+        body:
+          application/json:
+            type: ErrorResponse
+      401:
+        body:
+          application/json:
+            type: ErrorResponse
+      403:
+        body:
+          application/json:
+            type: ErrorResponse
+      500:
+        body:
+          application/json:
+            type: ErrorResponse
+
+  /{orderId}:
+    description: Operations on a specific order
+    uriParameters:
+      orderId:
+        type: string
+        description: Unique identifier of the sales order
+    
+    get:
+      description: Retrieve a specific sales order by ID
+      is: [rateLimited]
+      responses:
+        200:
+          body:
+            application/json:
+              type: SalesOrder
+        404:
+          body:
+            application/json:
+              type: ErrorResponse
+        401:
+          body:
+            application/json:
+              type: ErrorResponse
+        403:
+          body:
+            application/json:
+              type: ErrorResponse
+        500:
+          body:
+            application/json:
+              type: ErrorResponse
+    
+    put:
+      description: Update an existing sales order
+      is: [rateLimited]
+      body:
+        application/json:
+          type: SalesOrder
+      responses:
+        200:
+          body:
+            application/json:
+              type: OrderResponse
+        400:
+          body:
+            application/json:
+              type: ErrorResponse
+        404:
+          body:
+            application/json:
+              type: ErrorResponse
+        401:
+          body:
+            application/json:
+              type: ErrorResponse
+        403:
+          body:
+            application/json:
+              type: ErrorResponse
+        500:
+          body:
+            application/json:
+              type: ErrorResponse
+    
+    delete:
+      description: Delete a sales order (or mark as cancelled)
+      is: [rateLimited]
+      responses:
+        200:
+          body:
+            application/json:
+              type: OrderResponse
+        404:
+          body:
+            application/json:
+              type: ErrorResponse
+        401:
+          body:
+            application/json:
+              type: ErrorResponse
+        403:
+          body:
+            application/json:
+              type: ErrorResponse
+        500:
+          body:
+            application/json:
+              type: ErrorResponse
+
+/health:
+  get:
+    description: Check the health of the API and its connections
+    responses:
+      200:
+        body:
+          application/json:
+            example: |
+              {
+                "status": "UP",
+                "components": {
+                  "googleSheets": "UP",
+                  "api": "UP"
+                },
+                "timestamp": "2023-10-15T14:30:15Z"
+              }

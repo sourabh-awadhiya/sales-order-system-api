@@ -1,0 +1,24 @@
+{
+    "configs": [
+        "global.xml",
+        "sales-order-system-api.xml",
+        "implementation.xml",
+        "error-handler.xml"
+    ],
+    "classLoaderModelLoaderDescriptor": {
+        "attributes": {"exportedResources": [
+            "api/sales-order-system-api.raml",
+            "api/examples/*.json",
+            "api/schemas/*.json",
+            "log4j2.xml"
+        ]},
+        "id": "mule"
+    },
+    "requiredProduct": "MULE_EE",
+    "minMuleVersion": "4.9.0",
+    "bundleDescriptorLoader": {
+        "attributes": {},
+        "id": "mule"
+    },
+    "javaSpecificationVersions": ["17"]
+}
